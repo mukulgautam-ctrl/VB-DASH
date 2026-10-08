@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voicebot Recovery Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Segoe UI',sans-serif; background:#eef1f5; padding:20px; color:#222; }
+  .header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
+  h1 { font-size:22px; color:#1a237e; }
+  .sub { font-size:12px; color:#777; margin-top:4px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:20px; }
+  .kpi { background:#fff; padding:18px; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,.06); border-left:4px solid #3f51b5; }
+  .kpi.rec { border-left-color:#4caf50; }
+  .kpi.warn { border-left-color:#ff9800; }
+  .kpi .lbl { font-size:11px; text-transform:uppercase; color:#777; letter-spacing:.5px; }
+  .kpi .val { font-size:24px; font-weight:700; color:#1a237e; margin-top:6px; }
+  .kpi.rec .val { color:#2e7d32; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:18px; }
+  .card { background:#fff; padding:18px; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,.06); }
+  .card h3 { font-size:14px; color:#444; margin-bottom:14px; }
+  .loading { text-align:center; padding:60px; color:#666; font-size:16px; }
+  .full { grid-column:1/-1; }
+  .error { color:#c62828; background:#ffebee; padding:20px; border-radius:8px; text-align:center; margin:20px 0; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>💰 Voicebot Recovery Dashboard</h1>
+    <div class="sub" id="lastUpdated">—</div>
+  </div>
+</div>
+
+<div id="loading" class="loading">⏳ Loading data from Google Sheets...</div>
+<div id="error" style="display:none;" class="error"></div>
+
+<div id="dash" style="display:none;">
+  <div class="kpis">
+    <div class="kpi rec"><div class="lbl">Total Recovered</div><div class="val" id="kpiRec">—</div></div>
+    <div class="kpi"><div class="lbl">Total POS</div><div class="val" id="kpiPOS">—</div></div>
+    <div class="kpi rec"><div class="lbl">Recovery Rate</div><div class="val" id="kpiRate">—</div></div>
+    <div class="kpi"><div class="lbl">Unique Accounts</div><div class="val" id="kpiAcc">—</div></div>
+    <div class="kpi warn"><div class="lbl">Avg Daily Recovery</div><div class="val" id="kpiAvg">—</div></div>
+  </div>
+
+  <div class="grid">
+    <div class="card full">
+      <h3>📈 Daily Recovery vs Cumulative (Aug–Oct)</h3>
+      <canvas id="trendChart" height="80"></canvas>
+    </div>
+    <div class="card"><h3>Recovery by Product</h3><canvas id="prodChart"></canvas></div>
+    <div class="card"><h3>Top 10 States</h3><canvas id="stateChart"></canvas></div>
+    <div class="card"><h3>Recovery by City Category</h3><canvas id="cityChart"></canvas></div>
+    <div class="card"><h3>Recovery by POS Bucket</h3><canvas id="bucketChart"></canvas></div>
+    <div class="card"><h3>Month-wise Recovery</h3><canvas id="monthChart"></canvas></div>
+    <div class="card full"><h3>Top Dispositions by Recovery</h3><canvas id="dispChart" height="60"></canvas></div>
+    <div class="card full"><h3>Daily Transaction Count</h3><canvas id="txnChart" height="60"></canvas></div>
+  </div>
+</div>
+
+<script>
+// 🔴🔴🔴 REPLACE THIS WITH YOUR WEB APP URL FROM PART 1.6 🔴🔴🔴
+const API_URL = "https://script.google.com/a/macros/paytm.com/s/AKfycbz9JeA8rp0-NsvLpZ-lE8J3YrKFeNK1m-6VGLpTFagl-kWVo6zYPhp21mMFi4xXQe61/exec";
+
+const charts = {};
+const fmtCur = n => '₹' + Math.round(Number(n) || 0).toLocaleString('en-IN');
+const fmtNum = n => (Number(n) || 0).toLocaleString('en-IN');
+const COLORS = ['#3f51b5','#4caf50','#ff9800','#f44336','#9c27b0','#00bcd4','#795548','#607d8b','#e91e63','#009688'];
+
+async function load() {
+  try {
+    const res  = await fetch(API_URL);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    render(data);
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('dash').style.display = 'block';
+    document.getElementById('lastUpdated').textContent =
+      'Last updated: ' + new Date().toLocaleString('en-IN') +
+      ' • ' + (data.Daily_Recovery || []).length + ' days';
+  } catch (e) {
+    document.getElementById('loading').style.display = 'none';
+    const err = document.getElementById('error');
+    err.style.display = 'block';
+    err.textContent = '❌ Failed to load data: ' + e.message + ' — check API_URL';
+  }
+}
+
+function render(data) {
+  const k = data.KPIs?.[0] || {};
+  document.getElementById('kpiRec').textContent  = fmtCur(k.total_recovery);
+  document.getElementById('kpiPOS').textContent  = fmtCur(k.total_pos);
+  document.getElementById('kpiRate').textContent = (Number(k.recovery_rate)||0).toFixed(2) + '%';
+  document.getElementById('kpiAcc').textContent  = fmtNum(k.unique_accounts);
+  document.getElementById('kpiAvg').textContent  = fmtCur(k.avg_daily);
+
+  const daily = (data.Daily_Recovery || [])
+    .map(r => ({
+      date: r.date,
+      rec: Number(r.total_recovery),
+      cum: Number(r.cumulative_recovery),
+      txn: Number(r.transactions)
+    }))
+    .sort((a,b) => String(a.date).localeCompare(String(b.date)));
+
+  drawCombo('trendChart',
+    daily.map(d => formatDate(d.date)),
+    daily.map(d => d.rec),
+    daily.map(d => d.cum));
+
+  drawBar('txnChart', daily.map(d => formatDate(d.date)), daily.map(d => d.txn), 'Transactions');
+
+  const prod = data.By_Product || [];
+  draw('prodChart','bar', prod.map(r => r.Product), prod.map(r => Number(r.total_recovery)));
+
+  const state = (data.By_State || []).slice(0,10);
+  draw('stateChart','bar', state.map(r => r.STATE), state.map(r => Number(r.total_recovery)), true);
+
+  const city = data.By_CityCategory || [];
+  draw('cityChart','pie', city.map(r => r['City Category']), city.map(r => Number(r.total_recovery)));
+
+  const bucket = data.By_POSBucket || [];
+  draw('bucketChart','bar', bucket.map(r => r.POS_Bucket), bucket.map(r => Number(r.total_recovery)));
+
+  const months = data.By_Month || [];
+  draw('monthChart','bar', months.map(r => r.month), months.map(r => Number(r.total_recovery)));
+
+  const disp = (data.By_Disposition || []).slice(0,10);
+  draw('dispChart','bar', disp.map(r => r.disposition_type), disp.map(r => Number(r.total_recovery)), true);
+}
+
+function formatDate(s) {
+  const d = new Date(s);
+  return d.getDate() + ' ' + d.toLocaleString('en-IN', { month: 'short' });
+}
+
+function drawCombo(id, labels, dailyData, cumulativeData) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), {
+    data: {
+      labels,
+      datasets: [
+        { type:'bar', label:'Daily Recovery', data: dailyData,
+          backgroundColor:'rgba(63,81,181,0.75)', yAxisID:'y' },
+        { type:'line', label:'Cumulative Recovery', data: cumulativeData,
+          borderColor:'#4caf50', backgroundColor:'rgba(76,175,80,0.1)',
+          tension:.3, pointRadius:0, yAxisID:'y1' }
+      ]
+    },
+    options: {
+      responsive: true,
+      interaction: { mode:'index', intersect:false },
+      plugins: {
+        legend: { position:'bottom' },
+        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + fmtCur(c.parsed.y) } }
+      },
+      scales: {
+        y:  { position:'left',  beginAtZero:true, title:{ display:true, text:'Daily (₹)' },
+              ticks:{ callback: v => fmtCur(v) } },
+        y1: { position:'right', beginAtZero:true, title:{ display:true, text:'Cumulative (₹)' },
+              grid:{ drawOnChartArea:false }, ticks:{ callback: v => fmtCur(v) } }
+      }
+    }
+  });
+}
+
+function draw(id, type, labels, data, horizontal=false) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), {
+    type,
+    data: { labels, datasets: [{ data, backgroundColor: COLORS, borderColor:'#fff', borderWidth:2 }] },
+    options: {
+      indexAxis: horizontal ? 'y' : 'x',
+      responsive: true,
+      plugins: {
+        legend: { display: type==='pie'||type==='doughnut', position:'bottom' },
+        tooltip: { callbacks: { label: c => fmtCur(horizontal ? c.parsed.x : c.parsed.y) } }
+      },
+      scales: type === 'pie' ? {} : {
+        x: { ticks: { callback: v => horizontal ? fmtCur(v) : v } },
+        y: { ticks: { callback: v => horizontal ? v : fmtCur(v) } }
+      }
+    }
+  });
+}
+
+function drawBar(id, labels, data, label) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), {
+    type: 'bar',
+    data: { labels, datasets: [{ label, data, backgroundColor: '#3f51b5' }] },
+    options: { responsive: true, plugins: { legend: { display: false } } }
+  });
+}
+
+load();
+setInterval(load, 5 * 60 * 1000);
+</script>
+</body>
+</html>
